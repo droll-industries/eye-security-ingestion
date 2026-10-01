@@ -1,0 +1,3 @@
+* text=auto
+# Keep the SecOps sample byte-identical (CRLF) so the tests read the real format.
+samples/*.csv -text
