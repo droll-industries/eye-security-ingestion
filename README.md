@@ -4,8 +4,7 @@ A CLI and a single-endpoint microservice that SecOps uses to upload malicious-ac
 Each record is **validated**, **enriched** through the (unreliable) Enrichment Service, and
 **delivered** to the Analytics Service, which is limited to 20 messages per 10 s.
 
-> The design decisions are recorded in **[docs/adr](docs/adr/README.md)**. Start there if you
-> want the *why*; this README covers the *what* and *how to run it*.
+> The design decisions are recorded in **[docs/adr](docs/adr/README.md)**.
 
 ## Architecture at a glance
 
