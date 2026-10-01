@@ -169,4 +169,4 @@ In priority order for a production rollout:
 
 ## Note on AI assistance
 Built pair-programming with an AI assistant (Claude Code), as the brief allows. Every
-design decision is recorded in the ADRs and I can walk through and defend all of the code.
+design decision is recorded in the ADRs and I can walk through and defend the code.
