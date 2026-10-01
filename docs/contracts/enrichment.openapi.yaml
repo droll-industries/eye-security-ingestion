@@ -1,0 +1,102 @@
+openapi: 3.1.0
+info:
+  title: Enrichment Service (proposed contract)
+  version: 0.1.0-proposed
+  description: |
+    **Status: PROPOSED by the Ingestion team. To be confirmed with the Canary Team.**
+    The original docs were unavailable (see docs/adr/0003). This contract is based on the
+    SecOps CSV export (`id;asset_name;ip;created_utc;source;category`).
+
+    Why the lookup key is the IP alone:
+    * In the sample, one IP appears on several records/assets (e.g. 8.245.154.104 →
+      server_spark ×3) and one asset has several IPs (server_sonic, name_flash). Threat-intel
+      data belongs to the network indicator, not to our asset naming.
+    * An IP-only key makes results cacheable per IP. The Ingestion API treats results as fresh
+      for 15 min, and if a refresh fails, reuses them for up to 24 h (stale-if-error).
+
+    Consumer guarantees (what the Ingestion API relies on):
+    * The response is passed to Analytics **unchanged**, so new fields never break us
+      (`additionalProperties` allowed). Only `ip` is required.
+    * 408 / 429 / 5xx and timeouts are treated as transient (retried, circuit breaker).
+      401 / 403 / 404 are treated as configuration errors (retried, alerted). Unknown IPs must
+      return 200, not 404. Other 4xx are permanent (the record is dead-lettered).
+    * The consumer applies a 5 s per-attempt timeout.
+servers:
+  - url: http://localhost:5090
+    description: tools/FakeServices (local stand-in implementing this contract)
+security:
+  - eyeAuth: []
+paths:
+  /enrichment:
+    get:
+      operationId: enrichIp
+      summary: Get threat-intel / network enrichment for an IP address.
+      parameters:
+        - name: ip
+          in: query
+          required: true
+          description: IPv4 (dotted quad) or IPv6 address, as normalized by the Ingestion API.
+          schema: { type: string, examples: ["102.145.229.227"] }
+      responses:
+        "200":
+          description: Enrichment for the IP. Unknown IPs return 200 with only `ip` (not 404).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnrichmentResult" }
+        "400":
+          description: The `ip` parameter is missing or not a valid IP address. Permanent.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "401": { description: "Missing or invalid Authorization header. The consumer treats it as a configuration error: retried and alerted, never dead-lettered (it affects every record)." }
+        "429":
+          description: Throttled. Transient; honour `Retry-After`.
+          headers:
+            Retry-After: { schema: { type: integer }, description: Seconds to wait. }
+        "500": { description: Internal error. Transient. }
+        "503": { description: Temporarily unavailable. Transient. }
+components:
+  securitySchemes:
+    eyeAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: 'Shared key, sent verbatim: `Authorization: eye-am-hiring`.'
+  schemas:
+    EnrichmentResult:
+      type: object
+      additionalProperties: true
+      required: [ip]
+      properties:
+        ip: { type: string, description: The IP that was looked up. }
+        country: { type: string, pattern: "^[A-Z]{2}$", description: ISO 3166-1 alpha-2 country of the IP. }
+        asn: { type: string, pattern: "^AS[0-9]+$", description: Autonomous System Number. }
+        asOrganization: { type: string, description: Organization owning the ASN. }
+        reputationScore:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: 0 = benign … 100 = known malicious.
+        knownMalicious: { type: boolean }
+        tags:
+          type: array
+          items: { type: string }
+          examples: [["tor-exit-node", "botnet-c2"]]
+        lastSeenUtc: { type: string, format: date-time, description: When this IP was last seen in threat feeds. }
+      examples:
+        - ip: 102.145.229.227
+          country: NL
+          asn: AS10214
+          asOrganization: Example Hosting B.V.
+          reputationScore: 87
+          knownMalicious: true
+          tags: [scanner]
+          lastSeenUtc: "2024-09-30T12:00:00Z"
+    Problem:
+      type: object
+      description: RFC 9457 problem details.
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }

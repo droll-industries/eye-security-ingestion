@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.10.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="YamlDotNet" Version="18.1.0" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- Test naming (underscores) and fixtures conflict with some library-oriented rules. -->
+    <NoWarn>$(NoWarn);CA1707;CA2234;CA1861;CA2000;CA1001</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\samples\example_data.csv" Link="TestData\example_data.csv" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\docs\contracts\*.yaml" LinkBase="TestData\contracts" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Ingestion.Core\Ingestion.Core.csproj" />
+    <ProjectReference Include="..\..\src\Ingestion.Api\Ingestion.Api.csproj" />
+    <ProjectReference Include="..\..\src\Ingestion.Cli\Ingestion.Cli.csproj" />
+    <ProjectReference Include="..\..\tools\FakeServices\FakeServices.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,183 @@
+openapi: 3.1.0
+info:
+  title: Analytics Service (proposed contract)
+  version: 0.1.0-proposed
+  description: |
+    **Status: PROPOSED by the Ingestion team. To be confirmed with the Analytics team.**
+    The original docs were unavailable (see docs/adr/0003). The event is one row of the
+    SecOps CSV export (`id;asset_name;ip;created_utc;source;category`) after validation and
+    normalization (docs/adr/0005), plus the Enrichment Service result.
+
+    CSV column → event field:
+    | CSV          | Event          | Notes                                                        |
+    |--------------|----------------|--------------------------------------------------------------|
+    | id           | recordId       | NOT unique in the source data (e.g. 4568 appears twice)      |
+    | asset_name   | assetName      | trimmed                                                      |
+    | ip           | ip             | validated, canonical form                                    |
+    | created_utc  | createdUtc     | `dd/MM/yyyy HH:mm` (UTC) → ISO 8601                          |
+    | source       | source         | trimmed, lower-case; never empty or "null"                   |
+    | category     | category       | canonical MITRE ATT&CK name, e.g. "phising" → "Phishing"     |
+    | (derived)    | techniqueId    | MITRE technique id, e.g. T1566                               |
+    | (derived)    | eventId        | deduplication key, see below                                 |
+    | (derived)    | ingestionId    | which upload the record came from                            |
+    | (Enrichment) | enrichment     | EnrichmentResult, passed through unchanged                   |
+
+    Delivery semantics:
+    * **Rate limit: 20 messages per 10 seconds** (all clients of this key). **One HTTP request
+      is one message, whatever its size.** Above it: 429 + `Retry-After`. The Ingestion API
+      limits itself to stay under it and does not rely on 429s.
+    * **Batching (preferred): `POST /events/batch`** carries up to 100 events in one message,
+      so the limit allows 200 events/s instead of 2 (docs/adr/0009). `POST /events` (one
+      event per message) remains as a fallback.
+    * **At-least-once.** `eventId` is derived from the event content (SHA-256 of the
+      normalized record, 32 hex chars), so retries and re-uploads of the same record get
+      the same id. An `eventId` the service has already stored is reported as `duplicate`
+      (batch) / `202` (single), never as an error. That makes retrying a whole batch safe.
+    * **Partial success:** a batch is validated per event. Invalid events are `rejected` with
+      reasons and the valid ones are stored. Only a malformed envelope fails the whole batch (400).
+servers:
+  - url: http://localhost:5090
+    description: tools/FakeServices (local stand-in implementing this contract)
+security:
+  - eyeAuth: []
+paths:
+  /events/batch:
+    post:
+      operationId: ingestEventBatch
+      summary: Ingest up to 100 enriched events in one message (preferred).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EventBatch" }
+      responses:
+        "200":
+          description: |
+            Batch processed. `results` has exactly one entry per submitted event, **in the same
+            order**. Check each entry's `status`; a 200 doesn't mean every event was stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EventBatchResult" }
+        "400":
+          description: Malformed envelope (not an object, no `events` array, 0 or >100 items). Permanent for the whole batch.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "401": { description: "Missing or invalid Authorization header. The consumer treats it as a configuration error: retried and alerted, never dead-lettered (it affects every record)." }
+        "429":
+          description: Rate limit exceeded. Transient; honour `Retry-After`. Nothing in the batch was stored.
+          headers:
+            Retry-After: { schema: { type: integer }, description: Seconds to wait. }
+        "500": { description: Internal error. Transient; retry the whole batch (deduplicated by eventId). }
+        "503": { description: Temporarily unavailable. Transient; retry the whole batch. }
+  /events:
+    post:
+      operationId: ingestEvent
+      summary: Ingest one enriched event per message (fallback; prefer /events/batch).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AnalyticsEvent" }
+      responses:
+        "202": { description: Accepted (also returned for an already-seen `eventId`). }
+        "400":
+          description: Event violates this schema. Permanent; the record is dead-lettered.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "401": { description: "Missing or invalid Authorization header. The consumer treats it as a configuration error: retried and alerted, never dead-lettered (it affects every record)." }
+        "429":
+          description: Rate limit exceeded. Transient; honour `Retry-After`.
+          headers:
+            Retry-After: { schema: { type: integer }, description: Seconds to wait. }
+        "500": { description: Internal error. Transient. }
+        "503": { description: Temporarily unavailable. Transient. }
+components:
+  securitySchemes:
+    eyeAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: 'Shared key, sent verbatim: `Authorization: eye-am-hiring`.'
+  schemas:
+    EventBatch:
+      type: object
+      additionalProperties: false
+      required: [events]
+      properties:
+        events:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: "#/components/schemas/AnalyticsEvent" }
+    EventBatchResult:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          description: One entry per submitted event, in submission order.
+          items: { $ref: "#/components/schemas/EventResult" }
+    EventResult:
+      type: object
+      required: [eventId, status]
+      properties:
+        eventId: { type: string }
+        status:
+          type: string
+          enum: [accepted, duplicate, rejected]
+          description: |
+            accepted: stored. duplicate: eventId already stored (no-op, counts as delivered).
+            rejected: failed validation (permanent; see `errors`).
+        errors:
+          type: array
+          items: { type: string }
+    AnalyticsEvent:
+      type: object
+      additionalProperties: false
+      required: [eventId, ingestionId, recordId, assetName, ip, createdUtc, source, category, techniqueId, enrichment]
+      properties:
+        eventId: { type: string, pattern: "^[0-9a-f]{32}$", description: Content-derived deduplication key. }
+        ingestionId: { type: string, format: uuid }
+        recordId: { type: integer, minimum: 1, description: "`id` column; not unique." }
+        assetName: { type: string, minLength: 1 }
+        ip: { type: string, minLength: 1 }
+        createdUtc: { type: string, format: date-time }
+        source: { type: string, minLength: 1 }
+        category:
+          type: string
+          enum:
+            - Phishing
+            - Trusted Relationship
+            - Replication Through Removable Media
+            - Content Injection
+            - Exploit Public-Facing Application
+            - Supply Chain Compromise
+            - Drive-by Compromise
+            - Valid Accounts
+            - External Remote Services
+        techniqueId:
+          type: string
+          enum: [T1566, T1199, T1091, T1659, T1190, T1195, T1189, T1078, T1133]
+        enrichment:
+          $ref: "./enrichment.openapi.yaml#/components/schemas/EnrichmentResult"
+      examples:
+        - eventId: 3f1c9a7e0b2d4c6f8a1e3b5d7f9a0c2e
+          ingestionId: 01a0f91a-0fb1-7811-8073-f746dac3d812
+          recordId: 119611
+          assetName: server_horizon
+          ip: 102.145.229.227
+          createdUtc: "2024-02-27T00:00:00+00:00"
+          source: pxtrpf
+          category: Exploit Public-Facing Application
+          techniqueId: T1190
+          enrichment: { ip: 102.145.229.227, country: NL, asn: AS10214, reputationScore: 87, knownMalicious: true }
+    Problem:
+      type: object
+      description: RFC 9457 problem details.
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }

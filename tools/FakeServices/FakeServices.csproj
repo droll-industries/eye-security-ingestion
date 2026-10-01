@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <!-- Test tool, not shipped: relax the strict analyzer set used by src/. -->
+    <AnalysisLevel>latest-minimum</AnalysisLevel>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+</Project>
